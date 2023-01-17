@@ -11,23 +11,42 @@ plugins {
 android {
     namespace 'com.pratik.mytemplate'
     compileSdk 33
-
-    defaultConfig {
-        minSdk 21
-        targetSdk 33
-        versionCode 1
-        versionName "1.0"
-
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    def versionPropsFile = file('version.properties')
+    def g_versionDebug
+    def g_versionName
+    def g_versionCode
+    if (versionPropsFile.canRead()) {
+        Properties versionProps = new Properties()
+        versionProps.load(new FileInputStream(versionPropsFile))
+        g_versionCode = versionProps['VERSION_CODE'].toInteger()
+        g_versionDebug = versionProps['VERSION_DEBUG'].toInteger()
+        g_versionName = versionProps['VERSION_NAME']
+        versionProps['VERSION_CODE'] = g_versionCode.toString()
+        versionProps['VERSION_DEBUG'] = g_versionDebug.toString()
+        versionProps['VERSION_NAME'] = g_versionName.toString()
+        versionProps.store(versionPropsFile.newWriter(), null)
+        defaultConfig {
+            applicationId 'com.pratik.mytemplate'
+            versionCode g_versionCode
+            versionName g_versionName
+            minSdkVersion 19
+            targetSdkVersion 33
+            multiDexEnabled true
+            testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        }
+    } else {
+        throw new GradleException("Could not read version.properties!")
     }
 
     buildTypes {
         debug{
             minifyEnabled false
+            debuggable true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         release {
             minifyEnabled true
+            debuggable false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -45,24 +64,110 @@ android {
     }
     buildFeatures{
         viewBinding true
+        buildConfig true
     }
     flavorDimensions 'env'
     productFlavors {
-        staging {
+        local{
             dimension 'env'
-            applicationId 'com.pratik.mytemplate'
-            applicationIdSuffix '.staging'
+            applicationIdSuffix '.local'
+            buildConfigField "String" , "VERSIONDETAIL", "\"local-${g_versionName}(${g_versionCode})\""
+            buildConfigField "String", "BASE_URL", "\"${StagingBaseURL}\""
+            buildConfigField "String", "USERNAME", "\"${StagingUsername}\""
+            buildConfigField "String", "PASSWORD", "\"${StagingPassword}\""
+        }
+        qa {
+            dimension 'env'
+            applicationIdSuffix '.qa'
+            buildConfigField "String" , "VERSIONDETAIL", "\"qa-${g_versionName}(${g_versionCode})\""
             buildConfigField "String", "BASE_URL", "\"${StagingBaseURL}\""
             buildConfigField "String", "USERNAME", "\"${StagingUsername}\""
             buildConfigField "String", "PASSWORD", "\"${StagingPassword}\""
         }
         prod {
             dimension 'env'
-            applicationId 'com.pratik.mytemplate'
             applicationIdSuffix '.prod'
+            buildConfigField "String" , "VERSIONDETAIL", "\"prod-${g_versionName}(${g_versionCode})\""
             buildConfigField "String", "BASE_URL", "\"${ProdBaseURL}\""
             buildConfigField "String", "USERNAME", "\"${ProdUsername}\""
             buildConfigField "String", "PASSWORD", "\"${ProdPassword}\""
+        }
+    }
+    task prodReleaseOperations {
+        doLast {/* when run release task */
+            Properties versionProps = new Properties()
+            versionProps.load(new FileInputStream(versionPropsFile))
+            if (versionPropsFile.canRead()) {
+                def l_versionCode = versionProps['VERSION_CODE'].toInteger() + 1
+                def l_versionDebug = 0
+                Double l_versionName = (versionProps['VERSION_NAME'].toDouble() + 0.1).toDouble().round(1)
+                Integer lastDigit = l_versionName.toString()[lversion.toString().length() - 1].toInteger()
+                if(lastDigit == 0)
+                    l_versionName = (lversion + 0.1).toDouble()
+                versionProps['VERSION_CODE'] = l_versionCode.toString()
+                versionProps['VERSION_DEBUG'] = l_versionDebug.toString()
+                versionProps['VERSION_NAME'] = l_versionName.toString()
+                versionProps.store(versionPropsFile.newWriter(), null)
+            } else {
+                throw new GradleException("Could not read version.properties!")
+            }
+        }
+    }
+    task testingReleaseOperations {
+        doLast {/* when run release task */
+            Properties versionProps = new Properties()
+            versionProps.load(new FileInputStream(versionPropsFile))
+            if (versionPropsFile.canRead()) {
+                def l_versionCode = versionProps['VERSION_CODE'].toInteger() + 1
+                def l_versionDebug = versionProps['VERSION_DEBUG'].toInteger() + 1
+                def l_versionName = versionProps['VERSION_NAME']
+                versionProps['VERSION_CODE'] = l_versionCode.toString()
+                versionProps['VERSION_DEBUG'] = l_versionDebug.toString()
+                versionProps['VERSION_NAME'] = l_versionName
+                versionProps.store(versionPropsFile.newWriter(), null)
+            } else {
+                throw new GradleException("Could not read version.properties!")
+            }
+        }
+    }
+    tasks.whenTaskAdded { task ->
+        def name = task.name
+        if (name.contains("assembleProdRelease") || name.contains("bundleProdRelease")) {
+            //reset debug code
+            task.dependsOn 'prodReleaseOperations'
+        }
+        if (name.contains("assembleQaRelease") || name.contains("bundleQaRelease")) {
+            //increment debug code
+            task.dependsOn 'testingReleaseOperations'
+        }
+        //Skip some unnecessary tasks
+        if (name.startsWith("bundle")
+                && !name.contains("Classes")
+                && !name.contains("Resources")
+                && name != "bundle") {
+
+            def renameTaskName = "rename${task.name.capitalize()}Aab"
+            def flavor = getFlavor(name)
+            def type = getBuildType(name)
+            if(type != null && type.contains("debug"))
+                type = "$type($g_versionDebug)"
+            def l_version = "$g_versionName($g_versionCode)"
+            if (flavor == null || type == null) return
+
+            def outputName = "$flavor-$l_version$type"
+            tasks.create(renameTaskName) {
+                def path = "${rootDir}/app/${flavor}/${type}/"
+                def originalFile = "$path/app-${flavor}-${type}.aab"
+
+                doLast {
+                    if (file("$originalFile").exists()) {
+                        ant.move file: "$originalFile",
+                                tofile: "$path/${outputName}.aab"
+                    }
+                }
+            }
+
+            task.finalizedBy(renameTaskName)
         }
     }
 }
@@ -70,19 +175,19 @@ android {
 dependencies {
 
     implementation 'androidx.core:core-ktx:1.9.0'
-    implementation 'androidx.appcompat:appcompat:1.5.1'
+    implementation 'androidx.appcompat:appcompat:1.6.0'
     implementation 'com.google.android.material:material:1.7.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'androidx.test.ext:junit:1.1.4'
-    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
 
     //MVVM
     implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:2.5.1"
     implementation "androidx.lifecycle:lifecycle-livedata-ktx:2.5.1"
     implementation "androidx.lifecycle:lifecycle-viewmodel-savedstate:2.5.1"
     implementation "androidx.activity:activity-ktx:1.6.1"
-    implementation "androidx.fragment:fragment-ktx:1.5.4"
+    implementation "androidx.fragment:fragment-ktx:1.5.5"
 
     //Hilt
     implementation 'com.google.dagger:hilt-android:2.44.2'
@@ -90,9 +195,9 @@ dependencies {
     kapt 'com.google.dagger:hilt-compiler:2.44.2'
 
     //Room
-    implementation "androidx.room:room-runtime:2.4.3"
-    implementation "androidx.room:room-ktx:2.4.3"
-    kapt "androidx.room:room-compiler:2.4.3"
+    implementation "androidx.room:room-runtime:2.5.0"
+    implementation "androidx.room:room-ktx:2.5.0"
+    kapt "androidx.room:room-compiler:2.5.0"
 
     //Navigation graph
     implementation "androidx.navigation:navigation-fragment-ktx:2.5.3"
@@ -104,4 +209,46 @@ dependencies {
 
     //Logging Network Calls
     implementation 'com.squareup.okhttp3:logging-interceptor:5.0.0-alpha.10'
+}
+
+static String firstMatchingSubstring(String taskName, String[] keys) {
+    def lcName = taskName.toLowerCase()
+    for (String key : keys) {
+        if (lcName.contains(key.toLowerCase())) return key
+    }
+    return null
+}
+
+/**
+ *
+ * @param taskName e.g., bundleMyFlavorRelease or bundleRelease
+ * @return
+ */
+String getBuildType(String taskName) {
+    return firstMatchingSubstring(taskName, getBuildTypeNames())
+}
+
+/**
+ *
+ * @param taskName e.g., bundleMyFlavorRelease
+ * @return
+ */
+String getFlavor(String taskName) {
+    return firstMatchingSubstring(taskName, getProductFlavorNames())
+}
+
+String[] getBuildTypeNames() {
+    def types = []
+    android.buildTypes.all { type ->
+        types.add(type.name)
+    }
+    return types
+}
+
+String[] getProductFlavorNames() {
+    def flavors = []
+    android.productFlavors.all { flavor ->
+        flavors.add(flavor.name)
+    }
+    return flavors
 }
